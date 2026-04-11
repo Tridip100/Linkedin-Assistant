@@ -31,19 +31,20 @@ def build_enrichment_graph():
 
     # 2️⃣ Enrich People
     builder.add_conditional_edges(
-        "enrich_people",
-        lambda s: s.get("step"),
-        {
-            "people_enriched": "enrich_companies",
+    "enrich_people",
+    lambda s: s.get("step"),
+    {
+        "people_enriched": "enrich_companies",
+        "people_enrich_failed": END,   # ← won't crash on unexpected step
         },
     )
 
-    # 3️⃣ Enrich Companies
     builder.add_conditional_edges(
-        "enrich_companies",
-        lambda s: s.get("step"),
-        {
-            "companies_enriched": "email_guess",
+    "enrich_companies",
+    lambda s: s.get("step"),
+    {
+        "companies_enriched": "email_guess",
+        "companies_enrich_failed": END,
         },
     )
 
