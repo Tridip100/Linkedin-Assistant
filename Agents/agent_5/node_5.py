@@ -8,79 +8,31 @@ from core.llm import llm
 from core.config import SERPER_API_KEY
 
 
-# ──────────────────────────────────────────────────────────────
-# HELPERS
-# ──────────────────────────────────────────────────────────────
-
 def _parse_llm_json(raw: str):
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).replace("```", "").strip()
     return json.loads(cleaned)
 
-def _section(title: str):
-    width = 62
-    print(f"\n{'─' * width}")
-    print(f"  {title}")
-    print(f"{'─' * width}")
-
-def _row(label: str, value: str):
-    print(f"  {label:<25} {value}")
-
-def _ask(question: str, options: list) -> str:
-    print(f"\n  {question}")
-    for i, opt in enumerate(options, 1):
-        print(f"    [{i}] {opt}")
-    while True:
-        try:
-            raw    = input("\n  Your choice: ").strip()
-            choice = int(raw) - 1
-            if 0 <= choice < len(options):
-                selected = options[choice]
-                print(f"  ✓ Selected: {selected}")
-                return selected
-            else:
-                print(f"  Please enter a number between 1 and {len(options)}")
-        except ValueError:
-            print("  Please enter a valid number")
+def _log(logs: list, level: str, msg: str):
+    logs.append({"level": level, "msg": msg})
 
 
-# ──────────────────────────────────────────────────────────────
 # NODE 1 — Filter & Deduplicate
-# ──────────────────────────────────────────────────────────────
-
 def filter_targets_node(state: AgentState) -> AgentState:
-    """
-    - Remove duplicates by LinkedIn URL
-    - Remove students/aspirants/freshers
-    - Remove non-persons
-    - Keep max 4 per company (best scored)
-    - Apply minimum score threshold
-    """
     scored = state.get("scored_leads", [])
+    logs   = []
 
     if not scored:
-        return {**state,
-                "error": "No scored leads to filter.",
-                "step":  "filter_failed"}
+        return {**state, "error": "No scored leads to filter.", "step": "filter_failed", "logs": logs}
 
-    _section("Filtering & Deduplicating Leads")
+    skip_title_keywords = ["aspiring", "fresher", "student", "intern", "trainee",
+                           "learner", "beginner", "junior", "entry level", "looking for",
+                           "seeking", "graduate", "pursuing", "dreamer"]
+    skip_name_keywords  = ["demo", "test", "bot", "official", "page", "account",
+                           "team", "support", "admin", "path", "academy", "institute",
+                           "college", "university"]
 
-    # Keywords that indicate non-target profiles
-    skip_title_keywords = [
-        "aspiring", "fresher", "student", "intern",
-        "trainee", "learner", "beginner", "junior",
-        "entry level", "looking for", "seeking",
-        "graduate", "pursuing", "dreamer"
-    ]
-
-    skip_name_keywords = [
-        "demo", "test", "bot", "official", "page",
-        "account", "team", "support", "admin", "path",
-        "academy", "institute", "college", "university"
-    ]
-
-    seen_urls    = set()
-    by_company   = {}
-    removed_log  = []
+    seen_urls   = set()
+    by_company  = {}
 
     for p in scored:
         name     = p.get("name", "").strip()
@@ -89,82 +41,52 @@ def filter_targets_node(state: AgentState) -> AgentState:
         company  = p.get("company", "Unknown")
         score    = p.get("final_score", 0)
 
-        # ── Remove non-persons ─────────────────────────────
         if any(k in name.lower() for k in skip_name_keywords):
-            removed_log.append(f"  ✗ Non-person   : {name}")
+            _log(logs, "info", f"Removed (non-person): {name}")
             continue
-
-        # ── Remove students/aspirants ──────────────────────
         if any(k in title for k in skip_title_keywords):
-            removed_log.append(f"  ✗ Student/Aspir: {name} ({p.get('title')})")
+            _log(logs, "info", f"Removed (student): {name}")
             continue
-
-        # ── Remove below score threshold ───────────────────
         if score < 50:
-            removed_log.append(f"  ✗ Low score    : {name} ({score})")
+            _log(logs, "info", f"Removed (low score {score}): {name}")
             continue
-
-        # ── Deduplicate by LinkedIn URL ────────────────────
         if linkedin and linkedin in seen_urls:
-            removed_log.append(f"  ✗ Duplicate    : {name}")
+            _log(logs, "info", f"Removed (duplicate): {name}")
             continue
         if linkedin:
             seen_urls.add(linkedin)
 
-        # ── Group by company ───────────────────────────────
         by_company.setdefault(company, []).append(p)
 
-    # ── Keep max 4 per company (already sorted by score) ──
     filtered = []
     for company, persons in by_company.items():
-        kept = persons[:4]   # top 4 per company
+        kept = persons[:4]
         filtered.extend(kept)
-        if len(persons) > 4:
-            for p in persons[4:]:
-                removed_log.append(f"  ✗ Limit (>{4}/co): {p.get('name')} @ {company}")
+        for p in persons[4:]:
+            _log(logs, "info", f"Removed (limit 4/co): {p.get('name')} @ {company}")
 
-    # Sort final list by score
     filtered.sort(key=lambda x: x.get("final_score", 0), reverse=True)
 
-    # Print removal log
-    if removed_log:
-        print("\n  Removed:")
-        for log in removed_log:
-            print(f"  {log}")
-
-    print(f"\n  Input  : {len(scored)} scored leads")
-    print(f"  Output : {len(filtered)} clean targets")
-    print(f"  Removed: {len(scored) - len(filtered)} leads")
+    _log(logs, "success", f"Filtered: {len(scored)} → {len(filtered)} targets")
 
     if not filtered:
-        return {**state,
-                "error": "No valid targets after filtering.",
-                "step":  "filter_failed"}
+        return {**state, "error": "No valid targets after filtering.", "step": "filter_failed", "logs": logs}
 
-    return {**state, "target_list": filtered, "step": "targets_filtered"}
+    return {**state, "target_list": filtered, "step": "targets_filtered", "logs": logs}
 
 
-# ──────────────────────────────────────────────────────────────
-# NODE 2 — Email Verification (Abstract API)
-# ──────────────────────────────────────────────────────────────
-
+# NODE 2 — Email Verification
 def email_verify_node(state: AgentState) -> AgentState:
-    """
-    - Verify existing emails via Abstract API
-    - Try to find emails for people missing one via Serper
-    """
-    targets  = state.get("target_list", [])
-    headers  = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+    targets = state.get("target_list", [])
+    headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+    logs    = []
 
-    # Get Abstract API key from config
     try:
         from core.config import ABSTRACT_API_KEY
         has_abstract = True
     except ImportError:
         has_abstract = False
-        print("  [Info] ABSTRACT_API_KEY not set — skipping email verification")
-
-    _section("Email Verification")
+        _log(logs, "info", "ABSTRACT_API_KEY not set — skipping verification")
 
     updated = []
 
@@ -174,258 +96,139 @@ def email_verify_node(state: AgentState) -> AgentState:
         email    = p.get("email_hint", "")
         patterns = p.get("email_patterns", [])
 
-        # ── Verify existing email ──────────────────────────
         if email and "@" in email and has_abstract:
             try:
-                resp = requests.get(
-                    "https://emailvalidation.abstractapi.com/v1/",
-                    params={
-                        "api_key": ABSTRACT_API_KEY,
-                        "email":   email
-                    }
-                )
-                result       = resp.json()
-                deliverable  = result.get("deliverability", "UNKNOWN")
-                is_valid     = result.get("is_valid_format", {}).get("value", False)
-
+                resp        = requests.get("https://emailvalidation.abstractapi.com/v1/", params={"api_key": ABSTRACT_API_KEY, "email": email})
+                result      = resp.json()
+                deliverable = result.get("deliverability", "UNKNOWN")
                 if deliverable == "DELIVERABLE":
-                    p = {**p, "email_verified": True,  "email_status": "✅ Verified"}
-                    print(f"  {name:<30} → {email} ✅ DELIVERABLE")
+                    p = {**p, "email_verified": True,  "email_status": "verified"}
+                    _log(logs, "success", f"{name}: {email} ✅ DELIVERABLE")
                 elif deliverable == "UNDELIVERABLE":
-                    p = {**p, "email_verified": False, "email_status": "❌ Invalid",
-                         "email_hint": ""}
-                    print(f"  {name:<30} → {email} ❌ UNDELIVERABLE")
+                    p = {**p, "email_verified": False, "email_status": "invalid", "email_hint": ""}
+                    _log(logs, "warning", f"{name}: {email} ❌ UNDELIVERABLE")
                 else:
-                    p = {**p, "email_verified": False, "email_status": "⚠ Unknown"}
-                    print(f"  {name:<30} → {email} ⚠ UNKNOWN")
-
+                    p = {**p, "email_verified": False, "email_status": "unknown"}
+                    _log(logs, "info", f"{name}: {email} ⚠ UNKNOWN")
             except Exception as e:
-                print(f"  [Warning] Verification failed for {name}: {e}")
-                p = {**p, "email_verified": False, "email_status": "⚠ Not verified"}
+                _log(logs, "warning", f"Verification failed for {name}: {e}")
+                p = {**p, "email_verified": False, "email_status": "not_verified"}
 
-        # ── Try to find email if missing ───────────────────
         elif not email:
             query = f'"{name}" "{company}" email contact'
             try:
-                resp    = requests.post(
-                    "https://google.serper.dev/search",
-                    headers=headers,
-                    json={"q": query, "num": 3}
-                )
+                resp    = requests.post("https://google.serper.dev/search", headers=headers, json={"q": query, "num": 3})
                 results = resp.json().get("organic", [])
-
                 found_email = ""
                 for r in results:
                     snippet = r.get("snippet", "") + r.get("title", "")
-                    # Look for email pattern in snippet
-                    email_match = re.search(
-                        r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-                        snippet
-                    )
-                    if email_match:
-                        found_email = email_match.group(0)
+                    match   = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', snippet)
+                    if match:
+                        found_email = match.group(0)
                         break
-
                 if found_email:
-                    p = {**p, "email_hint": found_email, "email_status": "📧 Found"}
-                    print(f"  {name:<30} → {found_email} 📧 Found via search")
+                    p = {**p, "email_hint": found_email, "email_status": "found"}
+                    _log(logs, "success", f"{name}: {found_email} found via search")
                 else:
-                    # Use first pattern as best guess
                     best_guess = patterns[0] if patterns else ""
-                    p = {**p,
-                         "email_hint":   best_guess,
-                         "email_status": "💡 Pattern guess" if best_guess else "❌ No email"}
-                    print(f"  {name:<30} → {best_guess or 'no email found'}")
-
+                    p = {**p, "email_hint": best_guess, "email_status": "pattern" if best_guess else "none"}
+                    _log(logs, "info", f"{name}: {best_guess or 'no email'}")
             except Exception as e:
-                print(f"  [Warning] Email search failed for {name}: {e}")
-                p = {**p, "email_status": "❌ No email"}
+                _log(logs, "warning", f"Email search failed for {name}: {e}")
+                p = {**p, "email_status": "none"}
         else:
-            p = {**p, "email_status": "💡 Unverified pattern"}
-            print(f"  {name:<30} → {email} (unverified pattern)")
+            p = {**p, "email_status": "unverified_pattern"}
+            _log(logs, "info", f"{name}: {email} (unverified)")
 
         updated.append(p)
 
-    return {**state, "target_list": updated, "step": "emails_verified"}
+    return {**state, "target_list": updated, "step": "emails_verified", "logs": logs}
 
 
-# ──────────────────────────────────────────────────────────────
-# NODE 3 — Final Shortlist + Priority Assignment
-# ──────────────────────────────────────────────────────────────
-
+# NODE 3 — Shortlist + Priority
 def shortlist_node(state: AgentState) -> AgentState:
-    """
-    LLM reviews final list and assigns:
-    - Outreach priority: HIGH / MEDIUM / LOW
-    - Best contact channel: email / linkedin / both
-    - One line outreach strategy per person
-    """
     targets = state.get("target_list", [])
     intent  = state.get("intent", {})
     config  = state.get("scoring_config", {})
+    logs    = []
 
-    _section("Building Final Shortlist")
-
-    # Build summary for LLM
     people_summary = "\n".join([
         f"{i+1}. {p.get('name')} | {p.get('title')} | {p.get('company')} | "
-        f"Score:{p.get('final_score')} | "
-        f"Email:{p.get('email_hint', 'none')} | "
-        f"LinkedIn:{p.get('linkedin_url', 'none')[:40]} | "
-        f"Hook:{p.get('best_hook', 'none')[:50]}"
+        f"Score:{p.get('final_score')} | Email:{p.get('email_hint','none')} | "
+        f"LinkedIn:{(p.get('linkedin_url','none'))[:40]} | Hook:{(p.get('best_hook','none'))[:50]}"
         for i, p in enumerate(targets)
     ])
 
     prompt = f"""
-You are a B2B outreach strategist.
-
-User's goal    : {config.get('goal', 'B2B outreach')}
-Role searching : {intent.get('role')}
-Location       : {intent.get('location')}
-
-Review these leads and assign priority + channel for each.
-Return ONLY raw JSON array. No markdown. Start with [ end with ].
-
-[
-  {{
-    "name": "exact name from list",
-    "priority": "HIGH | MEDIUM | LOW",
-    "channel": "email | linkedin | both",
-    "strategy": "One specific sentence on how to approach this person"
-  }}
-]
-
-Priority rules:
-  HIGH   = score >= 65 AND (has email OR strong hook) AND decision maker
-  MEDIUM = score 55-64 OR missing one key element
-  LOW    = score < 55 OR student/junior (keep for future)
-
-Channel rules:
-  email   = has verified/pattern email, no LinkedIn
-  linkedin = has LinkedIn URL, no email
-  both    = has both
-
-Leads to review:
-{people_summary}
+B2B outreach strategist. Goal: {config.get('goal')} | Role: {intent.get('role')} | Location: {intent.get('location')}
+Review leads and assign priority + channel.
+Return ONLY raw JSON array. Start with [ end with ].
+[{{"name":"exact name","priority":"HIGH|MEDIUM|LOW","channel":"email|linkedin|both","strategy":"one sentence approach"}}]
+Priority: HIGH=score>=65 AND (email OR hook) AND decision maker. MEDIUM=55-64. LOW=<55
+Channel: email=has email no linkedin. linkedin=has linkedin no email. both=has both.
+Leads: {people_summary}
 """
-
     try:
-        raw        = llm.invoke(prompt).content.strip()
-        priorities = _parse_llm_json(raw)
-
-        # Merge priorities back into target list
+        raw          = llm.invoke(prompt).content.strip()
+        priorities   = _parse_llm_json(raw)
         priority_map = {p.get("name"): p for p in priorities}
 
         updated = []
         for p in targets:
             name     = p.get("name", "")
             priority = priority_map.get(name, {})
-            updated.append({
-                **p,
-                "priority": priority.get("priority", "MEDIUM"),
-                "channel":  priority.get("channel",  "linkedin"),
-                "strategy": priority.get("strategy", "")
-            })
+            updated.append({**p, "priority": priority.get("priority", "MEDIUM"),
+                            "channel": priority.get("channel", "linkedin"),
+                            "strategy": priority.get("strategy", "")})
 
-        # Sort by priority then score
         priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-        updated.sort(key=lambda x: (
-            priority_order.get(x.get("priority", "LOW"), 2),
-            -x.get("final_score", 0)
-        ))
+        updated.sort(key=lambda x: (priority_order.get(x.get("priority", "LOW"), 2), -x.get("final_score", 0)))
 
         high   = sum(1 for p in updated if p.get("priority") == "HIGH")
         medium = sum(1 for p in updated if p.get("priority") == "MEDIUM")
         low    = sum(1 for p in updated if p.get("priority") == "LOW")
+        _log(logs, "success", f"Shortlist: HIGH={high} MEDIUM={medium} LOW={low}")
 
-        print(f"\n  HIGH   : {high} contacts")
-        print(f"  MEDIUM : {medium} contacts")
-        print(f"  LOW    : {low} contacts")
-
-        return {**state, "target_list": updated, "step": "shortlist_done"}
+        return {**state, "target_list": updated, "step": "shortlist_done", "logs": logs}
 
     except Exception as e:
-        print(f"\n  [Error] Shortlist generation failed: {e}")
-        return {**state, "step": "shortlist_done"}   # continue anyway
+        _log(logs, "warning", f"Shortlist failed: {e}")
+        return {**state, "step": "shortlist_done", "logs": logs}
 
 
-# ──────────────────────────────────────────────────────────────
-# NODE 4 — Display Final Targets
-# ──────────────────────────────────────────────────────────────
+# NODE 4 — Build Dashboard Stats
+def build_dashboard_node(state: AgentState) -> AgentState:
+    """
+    Builds the stats object for the pre-Agent6 dashboard.
+    No display — just returns structured data for frontend.
+    """
+    logs      = []
+    messages  = state.get("generated_messages", [])
+    companies = state.get("companies", [])
+    people    = state.get("discovered_people", [])
+    enriched  = state.get("enriched_people", [])
+    scored    = state.get("scored_leads", [])
+    targets   = state.get("target_list", [])
 
-def display_targets_node(state: AgentState) -> AgentState:
-    targets = state.get("target_list", [])
+    high   = sum(1 for p in targets if p.get("priority") == "HIGH")
+    medium = sum(1 for p in targets if p.get("priority") == "MEDIUM")
+    low    = sum(1 for p in targets if p.get("priority") == "LOW")
+    emails = sum(1 for p in targets if p.get("email_hint"))
+    li     = sum(1 for p in targets if p.get("linkedin_url"))
 
-    if not targets:
-        print("\n  No targets to display.")
-        return {**state, "step": "no_targets"}
+    dashboard = {
+        "companies_found":    len(companies),
+        "people_found":       len(people),
+        "after_enrichment":   len(enriched),
+        "after_scoring":      len(scored),
+        "final_targets":      len(targets),
+        "high_priority":      high,
+        "medium_priority":    medium,
+        "low_priority":       low,
+        "emails_found":       emails,
+        "linkedin_found":     li,
+        "messages_generated": len(messages),
+    }
 
-    _section(f"Final Target List — {len(targets)} contacts")
-
-    priority_colors = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}
-
-    for i, p in enumerate(targets, 1):
-        priority = p.get("priority", "MEDIUM")
-        icon     = priority_colors.get(priority, "🟡")
-        score    = p.get("final_score", 0)
-        bar      = "█" * int(score // 10) + "░" * (10 - int(score // 10))
-
-        print(f"\n  {icon} #{i}  [{priority}]  {p.get('name')}  —  {p.get('title', '—')}")
-        print(f"       {p.get('company')}  |  Score: {bar} {score}/100")
-
-        if p.get("linkedin_url"):
-            _row("LinkedIn",  p.get("linkedin_url"))
-        if p.get("email_hint"):
-            _row("Email",     f"{p.get('email_hint')}  {p.get('email_status', '')}")
-        if p.get("location"):
-            _row("Location",  p.get("location"))
-        if p.get("channel"):
-            _row("Channel",   p.get("channel").upper())
-        if p.get("strategy"):
-            _row("Strategy",  p.get("strategy"))
-        if p.get("best_hook"):
-            _row("Hook",      p.get("best_hook")[:70] + "...")
-
-    # ── Human decision on CSV export ──────────────────────
-    export = _ask(
-        "Do you want to export this target list to CSV?",
-        [
-            "Yes — export all targets",
-            "Yes — export HIGH priority only",
-            "No — skip export"
-        ]
-    )
-
-    if "No" not in export:
-        export_targets = targets
-        if "HIGH" in export:
-            export_targets = [p for p in targets if p.get("priority") == "HIGH"]
-
-        # Write CSV
-        output_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..", "..", "output_leads.csv"
-        )
-        output_path = os.path.normpath(output_path)
-
-        fields = [
-            "name", "title", "company", "final_score", "priority",
-            "channel", "linkedin_url", "email_hint", "email_status",
-            "location", "best_hook", "strategy", "company_funding"
-        ]
-
-        try:
-            with open(output_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-                writer.writeheader()
-                writer.writerows(export_targets)
-
-            print(f"\n  ✅ Exported {len(export_targets)} contacts to:")
-            print(f"     {output_path}")
-
-        except Exception as e:
-            print(f"\n  [Error] CSV export failed: {e}")
-    else:
-        print("\n  Skipped CSV export.")
-
-    return {**state, "step": "targets_displayed"}
+    _log(logs, "success", "Dashboard stats built")
+    return {**state, "dashboard_stats": dashboard, "step": "dashboard_ready", "logs": logs}
