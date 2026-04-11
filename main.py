@@ -6,12 +6,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Age
 from Agents.agent_1.graph import build_graph
 from Agents.agent_2.graph_2 import build_people_finder_graph
 from Agents.agent_3.graph_3 import build_enrichment_graph
+from Agents.agent_4.graph_4 import build_scoring_graph
+from Agents.agent_5.graph_5 import build_targeting_graph
 
 agent1 = build_graph()
 agent2 = build_people_finder_graph()
 agent3 = build_enrichment_graph()
+agent4 = build_scoring_graph()
+agent5 = build_targeting_graph()
 
-# ── Initial state ──
 initial_state = {
     # Agent 1
     "domain": "", "raw_text": "", "companies": [],
@@ -27,6 +30,8 @@ initial_state = {
 
     # Agent 4
     "scored_leads": [],
+    "scoring_config": {},   # ← add
+    "human_answers": {},    # ← add
 
     # Agent 5
     "target_list": [],
@@ -58,3 +63,14 @@ else:
         if result3.get("error"):
             print(f"\n❌ Agent 3 stopped: {result3.get('error')}")
             print(f"   Last step: {result3.get('step')}")
+        else :
+            result4 = agent4.invoke(result3)
+            if result4.get("error"):
+                print(f"\n❌ Agent 4 stopped: {result4.get('error')}")
+                print(f"   Last step: {result4.get('step')}")
+            else :
+                result5 = agent5.invoke(result4)
+
+                if result5.get("error"):
+                    print(f"\n❌ Agent 5 stopped: {result5.get('error')}")
+                    print(f"   Last step: {result5.get('step')}")

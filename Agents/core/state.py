@@ -16,17 +16,19 @@ class AgentState(TypedDict):
     discovered_people: list
 
     # ── Agent 3: Enrichment ──
-    enriched_people: list        # people + about, expertise, best_hook, email_hint
-    enriched_companies: list     # companies + funding, team_size, pain_points
+    enriched_people: list
+    enriched_companies: list
 
-    # ── Agent 4: Scoring (coming) ──
-    scored_leads: list           # people ranked by fit score
+    # ── Agent 4: Scoring ──
+    scored_leads: list
+    scoring_config: dict
+    human_answers: dict
 
-    # ── Agent 5: Targeting (coming) ──
-    target_list: list            # final filtered shortlist
+    # ── Agent 5: Targeting ──
+    target_list: list
 
     # ── Agent 6: Message Generator (coming) ──
-    generated_messages: list     # personalized outreach per person
+    generated_messages: list
 
     # ── Global control ──
     messages: list
