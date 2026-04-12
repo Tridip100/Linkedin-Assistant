@@ -3,3 +3,12 @@ langchain
 langchain-mistralai
 python-dotenv
 requests
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+tenacity        # retry logic (VERY useful for APIs)
+aiohttp         # async requests (better performance)
+pandas
+numpy
+httpx
