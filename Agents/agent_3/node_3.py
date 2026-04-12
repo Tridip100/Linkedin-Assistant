@@ -20,7 +20,6 @@ def _is_valid_profile_url(url: str) -> bool:
     return "/in/" in url and "/posts/" not in url and "crunchbase" not in url
 
 
-# NODE 1 — Clean Profiles
 def clean_profiles_node(state: AgentState) -> AgentState:
     people = state.get("discovered_people", [])
     logs   = []
@@ -28,8 +27,8 @@ def clean_profiles_node(state: AgentState) -> AgentState:
     if not people:
         return {**state, "error": "No people to enrich.", "step": "clean_failed", "logs": logs}
 
-    cleaned      = []
-    seen_urls    = set()
+    cleaned       = []
+    seen_urls     = set()
     skip_keywords = ["demo", "test", "bot", "official", "page", "account", "team", "support", "admin", "info"]
 
     for p in people:
@@ -39,16 +38,16 @@ def clean_profiles_node(state: AgentState) -> AgentState:
         company  = p.get("company", "")
 
         if not name or name.lower() in ["unknown", "none", ""]:
-            _log(logs, "info", f"Skipped (no name): [{company}]")
+            _log(logs, "info", f"Skipped no name [{company}]")
             continue
         if any(k in name.lower() for k in skip_keywords):
-            _log(logs, "info", f"Skipped (non-person): {name}")
+            _log(logs, "info", f"Skipped non-person: {name}")
             continue
         if linkedin and not _is_valid_profile_url(linkedin):
-            match = re.search(r"/posts/([a-zA-Z0-9\-]+)_", linkedin)
+            match    = re.search(r"/posts/([a-zA-Z0-9\-]+)_", linkedin)
             linkedin = f"https://www.linkedin.com/in/{match.group(1)}" if match else ""
         if linkedin and linkedin in seen_urls:
-            _log(logs, "info", f"Duplicate skipped: {name}")
+            _log(logs, "info", f"Duplicate: {name}")
             continue
         if linkedin:
             seen_urls.add(linkedin)
@@ -56,11 +55,10 @@ def clean_profiles_node(state: AgentState) -> AgentState:
         cleaned.append({**p, "name": name, "title": title, "linkedin_url": linkedin,
                         "email": "", "recent_posts": [], "enriched": False})
 
-    _log(logs, "success", f"Cleaned: {len(people)} → {len(cleaned)} valid profiles")
+    _log(logs, "success", f"Cleaned: {len(people)} → {len(cleaned)}")
     return {**state, "discovered_people": cleaned, "step": "profiles_cleaned", "logs": logs}
 
 
-# NODE 2 — Enrich People
 def enrich_people_node(state: AgentState) -> AgentState:
     people  = state.get("discovered_people", [])
     headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
@@ -82,31 +80,31 @@ def enrich_people_node(state: AgentState) -> AgentState:
                 results = resp.json().get("organic", [])
                 all_snippets.extend([{"title": r.get("title",""), "snippet": r.get("snippet",""), "link": r.get("link","")} for r in results])
             except Exception as e:
-                _log(logs, "warning", f"Enrich search failed for {name}: {e}")
+                _log(logs, "warning", f"Search failed for {name}: {e}")
 
         if not all_snippets:
             enriched_people.append(p)
-            _log(logs, "info", f"{name}: no additional data")
+            _log(logs, "info", f"{name}: no data")
             continue
 
-        snippets_text = "\n".join(f"Title: {s['title']} | Snippet: {s['snippet']} | Link: {s['link']}" for s in all_snippets[:10])
+        snippets_text = "\n".join(f"Title:{s['title']} | Snippet:{s['snippet']} | Link:{s['link']}" for s in all_snippets[:10])
 
         prompt = f"""
-Enrich this B2B contact. Person: {name}, Company: {company}, Title: {title}
+Enrich B2B contact. Person:{name}, Company:{company}, Title:{title}
 Return ONLY raw JSON. Start with {{ end with }}.
 {{
-  "confirmed_title": "current job title",
+  "confirmed_title": "current title",
   "confirmed_company": "company name",
   "linkedin_url": "LinkedIn /in/ URL or empty",
   "email_hint": "email if found or empty",
   "location": "City, Country or empty",
   "about": "1-2 sentence summary",
-  "recent_activity": ["recent post topics (max 3)"],
-  "expertise": ["key skills (max 4)"],
+  "recent_activity": ["recent topics max 3"],
+  "expertise": ["key skills max 4"],
   "best_hook": "specific thing to reference when reaching out"
 }}
-Rules: only extract from data, confirmed_title = CURRENT role, reject /posts/ URLs.
-Search data: {snippets_text}
+Rules: extract only from data, current role only, reject /posts/ URLs.
+Data: {snippets_text}
 """
         try:
             raw      = llm.invoke(prompt).content.strip()
@@ -133,7 +131,6 @@ Search data: {snippets_text}
     return {**state, "enriched_people": enriched_people, "step": "people_enriched", "logs": logs}
 
 
-# NODE 3 — Enrich Companies
 def enrich_companies_node(state: AgentState) -> AgentState:
     companies = state.get("companies", [])
     headers   = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
@@ -147,7 +144,6 @@ def enrich_companies_node(state: AgentState) -> AgentState:
 
         apollo_data = {}
 
-        # Apollo first
         if domain:
             try:
                 resp = requests.get(
@@ -168,14 +164,13 @@ def enrich_companies_node(state: AgentState) -> AgentState:
                         "growth_signal":    org.get("short_description", ""),
                         "industry":         org.get("industry", "")
                     }
-                    _log(logs, "success", f"{name}: Apollo ✓ | {apollo_data.get('funding_stage')} | {apollo_data.get('team_size')} employees")
+                    _log(logs, "success", f"{name}: Apollo ✓")
             except Exception as e:
                 _log(logs, "warning", f"Apollo failed for {name}: {e}")
 
-        # Serper for news
         queries      = [
             f'"{name}" funding OR raised site:crunchbase.com OR site:techcrunch.com',
-            f'"{name}" news OR launch OR product 2024 OR 2025',
+            f'"{name}" news OR launch 2024 OR 2025',
         ]
         all_snippets = []
 
@@ -189,28 +184,27 @@ def enrich_companies_node(state: AgentState) -> AgentState:
 
         serper_enriched = {}
         if all_snippets:
-            snippets_text = "\n".join(f"Title: {s['title']} | Snippet: {s['snippet']}" for s in all_snippets[:10])
+            snippets_text = "\n".join(f"Title:{s['title']} | Snippet:{s['snippet']}" for s in all_snippets[:10])
             prompt = f"""
-Enrich B2B company profile. Company: {name}
-Funding: {apollo_data.get('funding_stage', 'Unknown')}, Team: {apollo_data.get('team_size', 'Unknown')}
+Enrich company {name}. Funding:{apollo_data.get('funding_stage','Unknown')}, Team:{apollo_data.get('team_size','Unknown')}
 Return ONLY raw JSON. Start with {{ end with }}.
 {{
   "recent_news": ["1-2 recent events"],
-  "pain_points": ["1-2 business challenges"],
-  "funding_stage": "only if unknown above else empty",
-  "funding_amount": "only if unknown above else empty"
+  "pain_points": ["1-2 challenges"],
+  "funding_stage": "only if unknown else empty",
+  "funding_amount": "only if unknown else empty"
 }}
-Search data: {snippets_text}
+Data: {snippets_text}
 """
             try:
                 raw             = llm.invoke(prompt).content.strip()
                 serper_enriched = _parse_llm_json(raw)
             except Exception as e:
-                _log(logs, "warning", f"LLM company enrichment failed for {name}: {e}")
+                _log(logs, "warning", f"LLM enrichment failed for {name}: {e}")
 
         if not apollo_data and not serper_enriched:
             enriched_companies.append(company)
-            _log(logs, "info", f"{name}: no data found")
+            _log(logs, "info", f"{name}: no data")
             continue
 
         updated = {
@@ -228,13 +222,12 @@ Search data: {snippets_text}
             "apollo_enriched":  bool(apollo_data)
         }
         enriched_companies.append(updated)
-        _log(logs, "success", f"{name}: {updated.get('funding_stage')} | {updated.get('team_size')} people")
+        _log(logs, "success", f"{name}: {updated.get('funding_stage')} | {updated.get('team_size')}")
 
     _log(logs, "success", f"Companies enriched: {len(enriched_companies)}")
     return {**state, "enriched_companies": enriched_companies, "step": "companies_enriched", "logs": logs}
 
 
-# NODE 4 — Email Guess
 def email_guess_node(state: AgentState) -> AgentState:
     people             = state.get("enriched_people", [])
     enriched_companies = state.get("enriched_companies", [])
@@ -259,13 +252,13 @@ def email_guess_node(state: AgentState) -> AgentState:
 
         if email_hint and "@" in email_hint:
             updated_people.append(p)
-            _log(logs, "success", f"{name}: {email_hint} (found)")
+            _log(logs, "success", f"{name}: {email_hint}")
             continue
 
         domain = domain_map.get(company, "")
         if not domain or not name:
             updated_people.append(p)
-            _log(logs, "info", f"{name}: no domain available")
+            _log(logs, "info", f"{name}: no domain")
             continue
 
         parts    = name.lower().split()

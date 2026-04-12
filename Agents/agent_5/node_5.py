@@ -1,7 +1,5 @@
 import re
 import json
-import csv
-import os
 import requests
 from core.state import AgentState
 from core.llm import llm
@@ -16,7 +14,6 @@ def _log(logs: list, level: str, msg: str):
     logs.append({"level": level, "msg": msg})
 
 
-# NODE 1 — Filter & Deduplicate
 def filter_targets_node(state: AgentState) -> AgentState:
     scored = state.get("scored_leads", [])
     logs   = []
@@ -24,15 +21,14 @@ def filter_targets_node(state: AgentState) -> AgentState:
     if not scored:
         return {**state, "error": "No scored leads to filter.", "step": "filter_failed", "logs": logs}
 
-    skip_title_keywords = ["aspiring", "fresher", "student", "intern", "trainee",
-                           "learner", "beginner", "junior", "entry level", "looking for",
-                           "seeking", "graduate", "pursuing", "dreamer"]
-    skip_name_keywords  = ["demo", "test", "bot", "official", "page", "account",
-                           "team", "support", "admin", "path", "academy", "institute",
-                           "college", "university"]
+    skip_title_keywords = ["aspiring", "fresher", "student", "intern", "trainee", "learner",
+                           "beginner", "junior", "entry level", "looking for", "seeking",
+                           "graduate", "pursuing", "dreamer"]
+    skip_name_keywords  = ["demo", "test", "bot", "official", "page", "account", "team",
+                           "support", "admin", "path", "academy", "institute", "college", "university"]
 
-    seen_urls   = set()
-    by_company  = {}
+    seen_urls  = set()
+    by_company = {}
 
     for p in scored:
         name     = p.get("name", "").strip()
@@ -42,16 +38,16 @@ def filter_targets_node(state: AgentState) -> AgentState:
         score    = p.get("final_score", 0)
 
         if any(k in name.lower() for k in skip_name_keywords):
-            _log(logs, "info", f"Removed (non-person): {name}")
+            _log(logs, "info", f"Removed non-person: {name}")
             continue
         if any(k in title for k in skip_title_keywords):
-            _log(logs, "info", f"Removed (student): {name}")
+            _log(logs, "info", f"Removed student: {name}")
             continue
         if score < 50:
-            _log(logs, "info", f"Removed (low score {score}): {name}")
+            _log(logs, "info", f"Removed low score {score}: {name}")
             continue
         if linkedin and linkedin in seen_urls:
-            _log(logs, "info", f"Removed (duplicate): {name}")
+            _log(logs, "info", f"Removed duplicate: {name}")
             continue
         if linkedin:
             seen_urls.add(linkedin)
@@ -63,11 +59,10 @@ def filter_targets_node(state: AgentState) -> AgentState:
         kept = persons[:4]
         filtered.extend(kept)
         for p in persons[4:]:
-            _log(logs, "info", f"Removed (limit 4/co): {p.get('name')} @ {company}")
+            _log(logs, "info", f"Removed limit 4/co: {p.get('name')} @ {company}")
 
     filtered.sort(key=lambda x: x.get("final_score", 0), reverse=True)
-
-    _log(logs, "success", f"Filtered: {len(scored)} → {len(filtered)} targets")
+    _log(logs, "success", f"Filtered: {len(scored)} → {len(filtered)}")
 
     if not filtered:
         return {**state, "error": "No valid targets after filtering.", "step": "filter_failed", "logs": logs}
@@ -75,7 +70,6 @@ def filter_targets_node(state: AgentState) -> AgentState:
     return {**state, "target_list": filtered, "step": "targets_filtered", "logs": logs}
 
 
-# NODE 2 — Email Verification
 def email_verify_node(state: AgentState) -> AgentState:
     targets = state.get("target_list", [])
     headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
@@ -103,22 +97,21 @@ def email_verify_node(state: AgentState) -> AgentState:
                 deliverable = result.get("deliverability", "UNKNOWN")
                 if deliverable == "DELIVERABLE":
                     p = {**p, "email_verified": True,  "email_status": "verified"}
-                    _log(logs, "success", f"{name}: {email} ✅ DELIVERABLE")
+                    _log(logs, "success", f"{name}: {email} ✅")
                 elif deliverable == "UNDELIVERABLE":
                     p = {**p, "email_verified": False, "email_status": "invalid", "email_hint": ""}
-                    _log(logs, "warning", f"{name}: {email} ❌ UNDELIVERABLE")
+                    _log(logs, "warning", f"{name}: {email} ❌")
                 else:
                     p = {**p, "email_verified": False, "email_status": "unknown"}
-                    _log(logs, "info", f"{name}: {email} ⚠ UNKNOWN")
+                    _log(logs, "info", f"{name}: {email} ⚠")
             except Exception as e:
-                _log(logs, "warning", f"Verification failed for {name}: {e}")
+                _log(logs, "warning", f"Verify failed {name}: {e}")
                 p = {**p, "email_verified": False, "email_status": "not_verified"}
-
         elif not email:
             query = f'"{name}" "{company}" email contact'
             try:
-                resp    = requests.post("https://google.serper.dev/search", headers=headers, json={"q": query, "num": 3})
-                results = resp.json().get("organic", [])
+                resp        = requests.post("https://google.serper.dev/search", headers=headers, json={"q": query, "num": 3})
+                results     = resp.json().get("organic", [])
                 found_email = ""
                 for r in results:
                     snippet = r.get("snippet", "") + r.get("title", "")
@@ -128,31 +121,30 @@ def email_verify_node(state: AgentState) -> AgentState:
                         break
                 if found_email:
                     p = {**p, "email_hint": found_email, "email_status": "found"}
-                    _log(logs, "success", f"{name}: {found_email} found via search")
+                    _log(logs, "success", f"{name}: {found_email} found")
                 else:
-                    best_guess = patterns[0] if patterns else ""
-                    p = {**p, "email_hint": best_guess, "email_status": "pattern" if best_guess else "none"}
-                    _log(logs, "info", f"{name}: {best_guess or 'no email'}")
+                    best = patterns[0] if patterns else ""
+                    p = {**p, "email_hint": best, "email_status": "pattern" if best else "none"}
+                    _log(logs, "info", f"{name}: {best or 'no email'}")
             except Exception as e:
-                _log(logs, "warning", f"Email search failed for {name}: {e}")
+                _log(logs, "warning", f"Email search failed {name}: {e}")
                 p = {**p, "email_status": "none"}
         else:
             p = {**p, "email_status": "unverified_pattern"}
-            _log(logs, "info", f"{name}: {email} (unverified)")
+            _log(logs, "info", f"{name}: {email} unverified")
 
         updated.append(p)
 
     return {**state, "target_list": updated, "step": "emails_verified", "logs": logs}
 
 
-# NODE 3 — Shortlist + Priority
 def shortlist_node(state: AgentState) -> AgentState:
     targets = state.get("target_list", [])
     intent  = state.get("intent", {})
     config  = state.get("scoring_config", {})
     logs    = []
 
-    people_summary = "\n".join([
+    summary = "\n".join([
         f"{i+1}. {p.get('name')} | {p.get('title')} | {p.get('company')} | "
         f"Score:{p.get('final_score')} | Email:{p.get('email_hint','none')} | "
         f"LinkedIn:{(p.get('linkedin_url','none'))[:40]} | Hook:{(p.get('best_hook','none'))[:50]}"
@@ -160,13 +152,12 @@ def shortlist_node(state: AgentState) -> AgentState:
     ])
 
     prompt = f"""
-B2B outreach strategist. Goal: {config.get('goal')} | Role: {intent.get('role')} | Location: {intent.get('location')}
-Review leads and assign priority + channel.
+B2B strategist. Goal:{config.get('goal')} | Role:{intent.get('role')} | Location:{intent.get('location')}
 Return ONLY raw JSON array. Start with [ end with ].
-[{{"name":"exact name","priority":"HIGH|MEDIUM|LOW","channel":"email|linkedin|both","strategy":"one sentence approach"}}]
-Priority: HIGH=score>=65 AND (email OR hook) AND decision maker. MEDIUM=55-64. LOW=<55
-Channel: email=has email no linkedin. linkedin=has linkedin no email. both=has both.
-Leads: {people_summary}
+[{{"name":"exact name","priority":"HIGH|MEDIUM|LOW","channel":"email|linkedin|both","strategy":"one sentence"}}]
+HIGH=score>=65 AND (email OR hook) AND decision maker. MEDIUM=55-64. LOW=<55.
+channel: email=has email no linkedin. linkedin=has linkedin no email. both=has both.
+Leads: {summary}
 """
     try:
         raw          = llm.invoke(prompt).content.strip()
@@ -175,11 +166,11 @@ Leads: {people_summary}
 
         updated = []
         for p in targets:
-            name     = p.get("name", "")
-            priority = priority_map.get(name, {})
-            updated.append({**p, "priority": priority.get("priority", "MEDIUM"),
-                            "channel": priority.get("channel", "linkedin"),
-                            "strategy": priority.get("strategy", "")})
+            pr = priority_map.get(p.get("name", ""), {})
+            updated.append({**p,
+                "priority": pr.get("priority", "MEDIUM"),
+                "channel":  pr.get("channel",  "linkedin"),
+                "strategy": pr.get("strategy", "")})
 
         priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
         updated.sort(key=lambda x: (priority_order.get(x.get("priority", "LOW"), 2), -x.get("final_score", 0)))
@@ -196,14 +187,8 @@ Leads: {people_summary}
         return {**state, "step": "shortlist_done", "logs": logs}
 
 
-# NODE 4 — Build Dashboard Stats
 def build_dashboard_node(state: AgentState) -> AgentState:
-    """
-    Builds the stats object for the pre-Agent6 dashboard.
-    No display — just returns structured data for frontend.
-    """
     logs      = []
-    messages  = state.get("generated_messages", [])
     companies = state.get("companies", [])
     people    = state.get("discovered_people", [])
     enriched  = state.get("enriched_people", [])
@@ -227,8 +212,8 @@ def build_dashboard_node(state: AgentState) -> AgentState:
         "low_priority":       low,
         "emails_found":       emails,
         "linkedin_found":     li,
-        "messages_generated": len(messages),
+        "messages_generated": len(state.get("generated_messages", [])),
     }
 
-    _log(logs, "success", "Dashboard stats built")
+    _log(logs, "success", "Dashboard ready")
     return {**state, "dashboard_stats": dashboard, "step": "dashboard_ready", "logs": logs}

@@ -28,7 +28,6 @@ def _rule_based_intent(query: str) -> dict:
     }
 
 
-# NODE 1 — Query Understanding
 def domain_input_node(state: AgentState) -> AgentState:
     domain = state.get("domain", "").strip()
     logs   = []
@@ -36,7 +35,7 @@ def domain_input_node(state: AgentState) -> AgentState:
     if not domain:
         return {**state, "error": "No search query provided.", "step": "domain_failed", "logs": logs}
 
-    intent_prompt = f"""
+    prompt = f"""
 You are a job search intent parser.
 User query: "{domain}"
 Extract structured intent. Return ONLY valid JSON — no markdown, no explanation.
@@ -50,17 +49,16 @@ Extract structured intent. Return ONLY valid JSON — no markdown, no explanatio
 }}
 """
     try:
-        raw    = llm.invoke(intent_prompt).content.strip()
+        raw    = llm.invoke(prompt).content.strip()
         intent = _parse_llm_json(raw)
-        _log(logs, "success", f"Intent parsed: {intent.get('role')} | {intent.get('opportunity_type')} | {intent.get('location')}")
+        _log(logs, "success", f"Intent: {intent.get('role')} | {intent.get('opportunity_type')} | {intent.get('location')}")
     except Exception as e:
         intent = _rule_based_intent(domain)
-        _log(logs, "warning", f"Intent parsing fallback used: {e}")
+        _log(logs, "warning", f"Fallback intent used: {e}")
 
     return {**state, "domain": domain, "intent": intent, "step": "domain_captured", "logs": logs}
 
 
-# NODE 2 — Web Search
 def search_context_node(state: AgentState) -> AgentState:
     intent    = state.get("intent", {})
     logs      = []
@@ -110,7 +108,6 @@ def search_context_node(state: AgentState) -> AgentState:
     return {**state, "raw_text": raw_text, "step": "context_fetched", "logs": logs}
 
 
-# NODE 3 — Company Extraction
 def company_extraction_node(state: AgentState) -> AgentState:
     raw_text = state.get("raw_text", "")
     intent   = state.get("intent", {})
@@ -128,7 +125,7 @@ The user is looking for:
   Work Mode         : {intent.get('work_mode')}
   Experience Level  : {intent.get('experience_level')}
 
-From the search data below, extract the BEST SUITED companies for this user.
+From the search data below, extract the BEST SUITED companies.
 Return ONLY a raw JSON array. No markdown. Start with [ and end with ].
 
 [
@@ -150,10 +147,7 @@ Return ONLY a raw JSON array. No markdown. Start with [ and end with ].
   }}
 ]
 
-Rules:
-  - fit_score 0-100, sort descending, only >= 60
-  - Return 5-8 companies
-
+Rules: fit_score 0-100, sort descending, only >= 60, return 5-8 companies.
 Search data:
 {raw_text}
 """
@@ -172,7 +166,6 @@ Search data:
         return {**state, "error": str(e), "step": "extraction_failed", "logs": logs}
 
 
-# NODE 4 — Company Insights (selected company deep dive)
 def company_info_node(state: AgentState) -> AgentState:
     company = state.get("selected_company")
     intent  = state.get("intent", {})
@@ -182,26 +175,21 @@ def company_info_node(state: AgentState) -> AgentState:
         return {**state, "error": "Invalid company data.", "step": "company_info_failed", "logs": logs}
 
     prompt = f"""
-You are a career strategist helping a job seeker.
-The user is a {intent.get('experience_level', 'fresher')} seeking
-{intent.get('opportunity_type', 'a position')} in {intent.get('role', 'tech')}.
+You are a career strategist.
+User: {intent.get('experience_level', 'fresher')} seeking {intent.get('opportunity_type')} in {intent.get('role')}.
+Company: {company.get('name')}, About: {company.get('tagline')}
+Roles: {', '.join(company.get('roles', []))}, Stack: {', '.join(company.get('tech_stack', []))}
 
-Company   : {company.get('name')}
-About     : {company.get('tagline')}
-Roles     : {', '.join(company.get('roles', []))}
-Stack     : {', '.join(company.get('tech_stack', []))}
-Package   : {company.get('salary_range')}
-
-Return ONLY a raw JSON object. No markdown. Start with {{ and end with }}.
+Return ONLY raw JSON. Start with {{ end with }}.
 {{
-  "company_summary": ["2-3 insights about culture and growth"],
-  "why_join": ["Top 3 career reasons"],
-  "top_roles": ["Top 5 open roles"],
-  "must_have_skills": ["Skills to highlight"],
-  "preparation_tips": ["What to prepare"],
-  "recent_signals": ["Recent funding/launches/news"],
-  "linkedin_message": "Short cold outreach under 300 chars",
-  "email_template": "Subject + body, max 150 words"
+  "company_summary": ["2-3 insights"],
+  "why_join": ["Top 3 reasons"],
+  "top_roles": ["Top 5 roles"],
+  "must_have_skills": ["Key skills"],
+  "preparation_tips": ["Prep tips"],
+  "recent_signals": ["Recent news"],
+  "linkedin_message": "Under 300 chars outreach",
+  "email_template": "Subject + body max 150 words"
 }}
 """
     try:

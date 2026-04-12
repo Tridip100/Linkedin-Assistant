@@ -1,6 +1,5 @@
 import re
 import json
-import os
 from core.state import AgentState
 from core.llm import llm
 
@@ -13,12 +12,7 @@ def _log(logs: list, level: str, msg: str):
     logs.append({"level": level, "msg": msg})
 
 
-# NODE 1 — Build Sender Bio
 def build_sender_bio_node(state: AgentState) -> AgentState:
-    """
-    Takes sender_profile from state (submitted via API form)
-    and generates a compelling bio.
-    """
     profile = state.get("sender_profile", {})
     logs    = []
 
@@ -26,29 +20,23 @@ def build_sender_bio_node(state: AgentState) -> AgentState:
         return {**state, "error": "No sender profile provided.", "step": "profile_failed", "logs": logs}
 
     skills = profile.get("skills", [])
-
-    bio_prompt = f"""
+    prompt = f"""
 Write a compelling 2-line professional bio for outreach messages.
-Name: {profile.get('name')}, College: {profile.get('college')},
-Degree: {profile.get('degree')}, Year/Exp: {profile.get('year')},
-Skills: {', '.join(skills)}, Project: {profile.get('project')},
-Achievement: {profile.get('achieve')}, Goal: {profile.get('goal')}
-
-Rules: Max 2 sentences under 50 words. Human and confident. Most impressive thing first.
-End with what they want. No "passionate" or "enthusiastic".
+Name:{profile.get('name')}, College:{profile.get('college')}, Degree:{profile.get('degree')},
+Year:{profile.get('year')}, Skills:{', '.join(skills)}, Project:{profile.get('project')},
+Achievement:{profile.get('achieve')}, Goal:{profile.get('goal')}
+Rules: Max 2 sentences under 50 words. Human confident. Most impressive first. No "passionate"/"enthusiastic".
 Return ONLY the bio text. No quotes.
 """
     try:
-        bio = llm.invoke(bio_prompt).content.strip()
+        bio = llm.invoke(prompt).content.strip()
     except Exception:
         bio = f"{profile.get('degree')} from {profile.get('college')} with {', '.join(skills[:3])}. Looking for {profile.get('goal')}."
 
-    updated_profile = {**profile, "bio": bio}
     _log(logs, "success", f"Bio generated for {profile.get('name')}")
-    return {**state, "sender_profile": updated_profile, "step": "profile_collected", "logs": logs}
+    return {**state, "sender_profile": {**profile, "bio": bio}, "step": "profile_collected", "logs": logs}
 
 
-# NODE 2 — Generate Messages
 def generate_messages_node(state: AgentState) -> AgentState:
     targets = state.get("target_list", [])
     profile = state.get("sender_profile", {})
@@ -74,11 +62,9 @@ def generate_messages_node(state: AgentState) -> AgentState:
 
         prompt = f"""
 Expert B2B outreach copywriter.
-
 SENDER: Name:{profile.get('name')}, Background:{profile.get('degree')} from {profile.get('college')},
 Skills:{', '.join(profile.get('skills',[]))}, Project:{profile.get('project')},
-Achievement:{profile.get('achieve')}, LinkedIn:{profile.get('linkedin')},
-Goal:{profile.get('goal')}, Bio:{profile.get('bio')}
+Achievement:{profile.get('achieve')}, LinkedIn:{profile.get('linkedin')}, Goal:{profile.get('goal')}, Bio:{profile.get('bio')}
 
 RECIPIENT: Name:{name}, Title:{title}, Company:{company}, About:{about},
 Expertise:{', '.join(expertise)}, Hook:{hook}, Recent:{', '.join(recent[:2]) if recent else 'none'},
@@ -88,20 +74,18 @@ GOAL: {config.get('goal', intent.get('opportunity_type', 'opportunity'))}
 
 Generate 4 messages. Return ONLY raw JSON. Start with {{ end with }}.
 {{
-  "linkedin_request": {{"message": "MAX 300 chars. Reference hook. Brief intro. Soft connect reason. No 'I saw your profile'.","char_count": 0}},
-  "linkedin_dm": {{"message": "100-150 words. Reference hook/post. Relevant skill/project. Soft question CTA.","word_count": 0}},
-  "cold_email": {{"subject": "Under 8 words. Specific. No 'Following up'.","body": "120-150 words. Hook→background→CTA. Sign with name+LinkedIn.","word_count": 0}},
-  "followup": {{"message": "50-70 words. Different angle. Not desperate.","word_count": 0}}
+  "linkedin_request": {{"message": "MAX 300 chars. Reference hook. Brief intro. Soft connect reason. No I saw your profile.", "char_count": 0}},
+  "linkedin_dm":      {{"message": "100-150 words. Reference hook. Relevant skill. Soft question CTA.", "word_count": 0}},
+  "cold_email":       {{"subject": "Under 8 words. Specific. No Following up.", "body": "120-150 words. Hook→background→CTA. Sign name+LinkedIn.", "word_count": 0}},
+  "followup":         {{"message": "50-70 words. Different angle. Not desperate.", "word_count": 0}}
 }}
-NEVER use: passionate, enthusiastic, reach out, touch base, I hope this finds you well,
-I came across your profile, Would love to connect, Quick question.
-Hook to reference: {hook[:100] if hook else 'their work at ' + company}
+NEVER: passionate, enthusiastic, reach out, touch base, I hope this finds you well, I came across your profile.
+Hook: {hook[:100] if hook else 'their work at ' + company}
 """
         try:
             raw      = llm.invoke(prompt).content.strip()
             messages = _parse_llm_json(raw)
 
-            # Fill metadata
             messages["person"]       = name
             messages["company"]      = company
             messages["title"]        = title
@@ -120,16 +104,14 @@ Hook to reference: {hook[:100] if hook else 'their work at ' + company}
             fu["word_count"] = len(fu.get("message", "").split())
 
             all_messages.append(messages)
-            _log(logs, "success", f"{name}: messages generated ✓")
-
+            _log(logs, "success", f"{name}: messages ✓")
         except Exception as e:
-            _log(logs, "error", f"Message generation failed for {name}: {e}")
+            _log(logs, "error", f"Message failed for {name}: {e}")
 
-    _log(logs, "success", f"Generated messages for {len(all_messages)}/{len(targets)} contacts")
+    _log(logs, "success", f"Generated {len(all_messages)}/{len(targets)}")
     return {**state, "generated_messages": all_messages, "step": "messages_generated", "logs": logs}
 
 
-# NODE 3 — Quality Score + Auto-rewrite
 def quality_score_node(state: AgentState) -> AgentState:
     messages = state.get("generated_messages", [])
     profile  = state.get("sender_profile", {})
@@ -144,40 +126,33 @@ def quality_score_node(state: AgentState) -> AgentState:
         subject = m.get("cold_email", {}).get("subject", "")
         body    = m.get("cold_email", {}).get("body", "")
 
-        score_prompt = f"""
-Review B2B outreach messages for {name}.
+        prompt = f"""
+Review B2B outreach for {name}.
 Return ONLY raw JSON. Start with {{ end with }}.
 {{
   "personalization": 0, "clarity": 0, "cta_strength": 0,
   "spam_risk": 0, "overall": 0, "rewrite_needed": false,
-  "issues": ["specific problems"]
+  "issues": ["problems"]
 }}
-Scoring: personalization=specific references, clarity=clear ask, cta_strength=soft compelling,
+personalization=specific refs, clarity=clear ask, cta_strength=soft compelling,
 spam_risk=10 very spammy 1 natural (lower better), overall=avg(p+c+cta)-spam/2.
-rewrite_needed = true if overall < 7 OR spam_risk > 6.
-LinkedIn Request: {hook[:200]}
-DM: {dm[:300]}
-Subject: {subject}
-Body: {body[:400]}
+rewrite_needed=true if overall<7 OR spam_risk>6.
+LI Request:{hook[:200]} DM:{dm[:300]} Subject:{subject} Body:{body[:400]}
 """
         try:
-            raw    = llm.invoke(score_prompt).content.strip()
-            scores = _parse_llm_json(raw)
+            raw     = llm.invoke(prompt).content.strip()
+            scores  = _parse_llm_json(raw)
             overall = scores.get("overall", 7)
             rewrite = scores.get("rewrite_needed", False)
             issues  = scores.get("issues", [])
 
-            _log(logs, "info", f"{name}: quality {overall}/10 | spam {scores.get('spam_risk')}/10")
+            _log(logs, "info", f"{name}: quality {overall}/10 spam {scores.get('spam_risk')}/10")
 
             if rewrite:
-                _log(logs, "info", f"{name}: rewriting — {', '.join(issues)}")
                 rewrite_prompt = f"""
 Rewrite outreach for {name}. Fix: {', '.join(issues)}
-Original LI Request: {hook}
-Original DM: {dm}
-Original Subject: {subject}
-Original Body: {body}
-Sender: {profile.get('bio')}, Skills: {', '.join(profile.get('skills', []))}
+Original LI:{hook} DM:{dm} Subject:{subject} Body:{body}
+Sender:{profile.get('bio')}, Skills:{', '.join(profile.get('skills', []))}
 Return ONLY raw JSON same structure. Start with {{ end with }}.
 {{"linkedin_request":{{"message":""}},"linkedin_dm":{{"message":""}},"cold_email":{{"subject":"","body":""}},"followup":{{"message":""}}}}
 """
@@ -192,19 +167,17 @@ Return ONLY raw JSON same structure. Start with {{ end with }}.
                          "rewritten":        True}
                     _log(logs, "success", f"{name}: rewritten ✓")
                 except Exception as e:
-                    _log(logs, "warning", f"{name}: rewrite failed: {e}")
+                    _log(logs, "warning", f"Rewrite failed {name}: {e}")
 
             m["quality_scores"] = scores
             reviewed.append(m)
-
         except Exception as e:
-            _log(logs, "warning", f"Quality check failed for {name}: {e}")
+            _log(logs, "warning", f"Quality check failed {name}: {e}")
             reviewed.append(m)
 
     return {**state, "generated_messages": reviewed, "step": "quality_checked", "logs": logs}
 
 
-# NODE 4 — Campaign Planner
 def campaign_planner_node(state: AgentState) -> AgentState:
     messages = state.get("generated_messages", [])
     logs     = []
@@ -214,14 +187,14 @@ def campaign_planner_node(state: AgentState) -> AgentState:
     low    = [m for m in messages if m.get("priority") == "LOW"]
 
     plan = {
-        "day_1": {"action": "Send LinkedIn connection requests to HIGH priority", "contacts": [m.get("person") for m in high], "note": "Max 5-10/day to avoid spam flag"},
-        "day_2": {"action": "Send cold emails to HIGH priority", "contacts": [m.get("person") for m in high if m.get("email")], "note": "Only to those with email"},
-        "day_3": {"action": "Send LinkedIn requests to MEDIUM priority", "contacts": [m.get("person") for m in medium], "note": "Expand outreach"},
-        "day_4": {"action": "Send DMs to accepted Day 1 connections", "contacts": [m.get("person") for m in high], "note": "Check who accepted"},
-        "day_5": {"action": "Follow up with no-reply HIGH contacts", "contacts": [m.get("person") for m in high], "note": "Different angle"},
-        "day_6": {"action": "Send cold emails to MEDIUM priority", "contacts": [m.get("person") for m in medium if m.get("email")], "note": "Expand email outreach"},
-        "day_7": {"action": "Review responses + plan next week", "contacts": [], "note": "Move responders to CRM"},
+        "day_1": {"action": "Send LinkedIn requests to HIGH priority", "contacts": [m.get("person") for m in high], "note": "Max 5-10/day"},
+        "day_2": {"action": "Send cold emails to HIGH priority",       "contacts": [m.get("person") for m in high if m.get("email")], "note": "Email only"},
+        "day_3": {"action": "Send LinkedIn requests to MEDIUM",        "contacts": [m.get("person") for m in medium], "note": "Expand outreach"},
+        "day_4": {"action": "Send DMs to accepted connections",        "contacts": [m.get("person") for m in high], "note": "Check acceptances"},
+        "day_5": {"action": "Follow up no-reply HIGH contacts",        "contacts": [m.get("person") for m in high], "note": "Different angle"},
+        "day_6": {"action": "Send emails to MEDIUM priority",          "contacts": [m.get("person") for m in medium if m.get("email")], "note": "Expand emails"},
+        "day_7": {"action": "Review responses + plan next week",       "contacts": [], "note": "Move responders to CRM"},
     }
 
-    _log(logs, "success", f"Campaign plan built: {len(high)} HIGH, {len(medium)} MEDIUM, {len(low)} LOW")
+    _log(logs, "success", f"Campaign: {len(high)} HIGH {len(medium)} MEDIUM {len(low)} LOW")
     return {**state, "campaign_plan": plan, "step": "campaign_planned", "logs": logs}

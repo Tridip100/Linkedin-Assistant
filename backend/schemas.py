@@ -7,7 +7,7 @@ class SearchRequest(BaseModel):
 
 class AnswersRequest(BaseModel):
     session_id: str
-    answer: Dict[str,Any]
+    answers: Dict[str,Any]
 
 class SenderProfileRequest(BaseModel):
     session_id: str

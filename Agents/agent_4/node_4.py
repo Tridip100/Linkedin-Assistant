@@ -12,12 +12,7 @@ def _log(logs: list, level: str, msg: str):
     logs.append({"level": level, "msg": msg})
 
 
-# NODE 1 — Generate Interview Questions
 def generate_questions_node(state: AgentState) -> AgentState:
-    """
-    LLM generates relevant questions based on intent.
-    Returns questions to frontend — frontend asks user.
-    """
     enriched_people = state.get("enriched_people", [])
     intent          = state.get("intent", {})
     companies       = state.get("enriched_companies", [])
@@ -26,19 +21,14 @@ def generate_questions_node(state: AgentState) -> AgentState:
     if not enriched_people:
         return {**state, "error": "No enriched people to score.", "step": "interview_failed", "logs": logs}
 
-    question_prompt = f"""
+    prompt = f"""
 You are a B2B lead scoring assistant.
-User searched for:
-  Role/Domain      : {intent.get('role')}
-  Opportunity Type : {intent.get('opportunity_type')}
-  Location         : {intent.get('location')}
-  Work Mode        : {intent.get('work_mode')}
-  Experience Level : {intent.get('experience_level')}
+User searched: Role:{intent.get('role')}, Type:{intent.get('opportunity_type')},
+Location:{intent.get('location')}, Mode:{intent.get('work_mode')}, Level:{intent.get('experience_level')}
+Companies: {[c.get('name') for c in companies[:5]]}
+People: {len(enriched_people)} contacts
 
-Companies found: {[c.get('name') for c in companies[:5]]}
-People found: {len(enriched_people)} contacts
-
-Generate 5-6 smart relevant interview questions with 3-4 options each.
+Generate 5-6 smart relevant questions with 3-4 options each.
 Return ONLY raw JSON. Start with [ end with ].
 [
   {{
@@ -49,40 +39,26 @@ Return ONLY raw JSON. Start with [ end with ].
     "weight_key": "seniority"
   }}
 ]
-Rules:
-  - multi_select: true for all
-  - weight_key: seniority|company_stage|location_match|has_email|has_linkedin|has_hook|tech_stack|confidence
-  - Make questions specific to their search context
+Rules: multi_select true for all, weight_key one of: seniority|company_stage|location_match|has_email|has_linkedin|has_hook|tech_stack|confidence, specific to their domain.
 """
-
     try:
-        raw       = llm.invoke(question_prompt).content.strip()
+        raw       = llm.invoke(prompt).content.strip()
         questions = _parse_llm_json(raw)
         _log(logs, "success", f"Generated {len(questions)} questions")
         return {**state, "interview_questions": questions, "step": "questions_generated", "logs": logs}
     except Exception as e:
-        _log(logs, "warning", f"Question generation failed, using fallback: {e}")
+        _log(logs, "warning", f"Using fallback questions: {e}")
         questions = [
-            {"id": "q1", "question": "What seniority level to prioritize?",
-             "options": ["Founders/C-suite only", "VP/Director level", "Managers fine", "Anyone works"], "multi_select": True, "weight_key": "seniority"},
-            {"id": "q2", "question": "How important is location?",
-             "options": ["Must be target city", "Same country preferred", "Doesn't matter"], "multi_select": True, "weight_key": "location_match"},
-            {"id": "q3", "question": "How do you plan to reach out?",
-             "options": ["Email only", "LinkedIn DM", "Both preferred", "Either works"], "multi_select": True, "weight_key": "has_linkedin"},
-            {"id": "q4", "question": "Does tech stack matter?",
-             "options": ["Must match domain", "Modern stack preferred", "Doesn't matter"], "multi_select": True, "weight_key": "tech_stack"},
-            {"id": "q5", "question": "How important is a personal talking point?",
-             "options": ["Very — only with hook", "Preferred not required", "Doesn't matter"], "multi_select": True, "weight_key": "has_hook"},
+            {"id": "q1", "question": "What seniority level to prioritize?", "options": ["Founders/C-suite only", "VP/Director level", "Managers fine", "Anyone works"], "multi_select": True, "weight_key": "seniority"},
+            {"id": "q2", "question": "How important is location?", "options": ["Must be target city", "Same country preferred", "Doesn't matter"], "multi_select": True, "weight_key": "location_match"},
+            {"id": "q3", "question": "How do you plan to reach out?", "options": ["Email only", "LinkedIn DM", "Both preferred", "Either works"], "multi_select": True, "weight_key": "has_linkedin"},
+            {"id": "q4", "question": "Does tech stack matter?", "options": ["Must match domain", "Modern stack preferred", "Doesn't matter"], "multi_select": True, "weight_key": "tech_stack"},
+            {"id": "q5", "question": "How important is a personal talking point?", "options": ["Very — only with hook", "Preferred not required", "Doesn't matter"], "multi_select": True, "weight_key": "has_hook"},
         ]
         return {**state, "interview_questions": questions, "step": "questions_generated", "logs": logs}
 
 
-# NODE 2 — Build Scoring Config from Answers
 def build_scoring_config_node(state: AgentState) -> AgentState:
-    """
-    Takes human_answers from state (submitted via API)
-    and converts them into a scoring weight config.
-    """
     answers  = state.get("human_answers", {})
     intent   = state.get("intent", {})
     location = intent.get("location", "any")
@@ -93,11 +69,11 @@ def build_scoring_config_node(state: AgentState) -> AgentState:
 
     answers_text = "\n".join(f"  {v['question']} → {v['answer']}" for v in answers.values())
 
-    config_prompt = f"""
+    prompt = f"""
 You are a B2B lead scoring strategist.
-User context: Role: {intent.get('role')}, Location: {location}
+User location: {location}, Role: {intent.get('role')}
 
-Interview answers:
+Answers:
 {answers_text}
 
 Return ONLY raw JSON. Start with {{ end with }}.
@@ -117,24 +93,18 @@ Return ONLY raw JSON. Start with {{ end with }}.
   }},
   "goal": "one sentence outreach goal"
 }}
-CRITICAL Rules:
-  - Weights must sum to 1.0
-  - min_seniority values: "c_suite"|"vp"|"director"|"manager"|"individual_contributor"
-  - min_seniority = MINIMUM and above: managers → ["c_suite","vp","director","manager"]
-  - NEVER set min_seniority to just ["manager"] alone
-  - require_hook = true ONLY if explicitly said very important
-  - preferred_location = {location}
-  - Unimportant dimensions → 0.05
+CRITICAL: weights sum to 1.0. min_seniority values: c_suite|vp|director|manager|individual_contributor.
+min_seniority = MINIMUM and above: managers→["c_suite","vp","director","manager"].
+NEVER just ["manager"]. require_hook=true ONLY if explicitly very important. Unimportant→0.05.
 """
-
     try:
-        raw    = llm.invoke(config_prompt).content.strip()
+        raw    = llm.invoke(prompt).content.strip()
         config = _parse_llm_json(raw)
-        _log(logs, "success", f"Scoring config built: {config.get('goal')}")
+        _log(logs, "success", f"Config: {config.get('goal')}")
         return {**state, "scoring_config": config, "step": "config_built", "logs": logs}
     except Exception as e:
-        _log(logs, "warning", f"Config failed, using default: {e}")
-        default_config = {
+        _log(logs, "warning", f"Using default config: {e}")
+        default = {
             "weights": {"seniority": 0.25, "company_stage": 0.15, "location_match": 0.15,
                         "has_email": 0.10, "has_linkedin": 0.10, "has_hook": 0.15,
                         "tech_stack": 0.05, "confidence": 0.05},
@@ -143,10 +113,9 @@ CRITICAL Rules:
                         "require_hook": False, "preferred_location": location},
             "goal": "General B2B outreach"
         }
-        return {**state, "scoring_config": default_config, "step": "config_built", "logs": logs}
+        return {**state, "scoring_config": default, "step": "config_built", "logs": logs}
 
 
-# NODE 3 — Scoring Engine
 def scoring_node(state: AgentState) -> AgentState:
     people    = state.get("enriched_people", [])
     companies = state.get("enriched_companies", [])
@@ -156,7 +125,6 @@ def scoring_node(state: AgentState) -> AgentState:
 
     weights = config.get("weights", {})
     filters = config.get("filters", {})
-
     company_map = {c.get("name", ""): c for c in companies}
 
     seniority_rank = {"c_suite": 100, "vp": 85, "director": 70, "manager": 50, "individual_contributor": 30}
@@ -170,10 +138,9 @@ def scoring_node(state: AgentState) -> AgentState:
     require_hook       = filters.get("require_hook", False)
     intent_location    = intent.get("location", "any").lower()
 
-    # Safety fix
     if min_seniority and "manager" in min_seniority and "c_suite" not in min_seniority:
         min_seniority = ["c_suite", "vp", "director", "manager"]
-        _log(logs, "info", "Auto-fixed min_seniority to include all senior levels")
+        _log(logs, "info", "Auto-fixed min_seniority")
 
     scored = []
 
@@ -192,11 +159,10 @@ def scoring_node(state: AgentState) -> AgentState:
         tech_stack    = [t.lower() for t in co_data.get("tech_stack", [])]
         pain_points   = co_data.get("pain_points", [])
 
-        if require_email    and not email:   continue
+        if require_email    and not email:    continue
         if require_linkedin and not linkedin: continue
-        if require_hook     and not hook:    continue
+        if require_hook     and not hook:     continue
         if min_seniority and len(min_seniority) > 0 and seniority not in min_seniority:
-            _log(logs, "info", f"Filtered (seniority): {name}")
             continue
 
         seniority_score = seniority_rank.get(seniority, 30)
@@ -233,7 +199,7 @@ def scoring_node(state: AgentState) -> AgentState:
 
         scored.append({
             **p,
-            "final_score":     final_score,
+            "final_score": final_score,
             "score_breakdown": {
                 "seniority":  round(seniority_score  * weights.get("seniority",      0.25), 1),
                 "stage":      round(stage_score      * weights.get("company_stage",  0.20), 1),
