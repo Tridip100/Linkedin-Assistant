@@ -7,7 +7,9 @@ export default function useWebSocket(sessionId) {
   useEffect(() => {
     if (!sessionId) return
 
-    ws.current = new WebSocket(`ws://localhost:8000/ws/${sessionId}`)
+    const WS_BASE = import.meta.env.VITE_API_URL.replace("https", "wss")
+
+    ws.current = new WebSocket(`${WS_BASE}/ws/${sessionId}`)
 
     ws.current.onmessage = (e) => {
       const event = JSON.parse(e.data)
