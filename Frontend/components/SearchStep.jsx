@@ -134,7 +134,8 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
 
   const connectWS = (sid) => {
     wsRef.current?.close()
-    const ws = new WebSocket(`ws://localhost:8000/ws/${sid}`)
+    const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
+    const ws = new WebSocket(`${WS_BASE}/ws/${session_id}`)
 
     ws.onopen    = () => console.log('[WS] connected')
     ws.onerror   = (e) => console.error('[WS] error', e)
