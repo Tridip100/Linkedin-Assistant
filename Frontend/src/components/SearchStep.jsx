@@ -134,8 +134,8 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
 
   const connectWS = (sid) => {
     wsRef.current?.close()
-    const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
-    const ws = new WebSocket(`${WS_BASE}/ws/${sid}`)  // ← sid not session_id
+    const WS_BASE = import.meta.env.VITE_API_URL.replace("https", "wss").replace("/api", "")
+    const ws = new WebSocket(`${WS_BASE}/ws/${sid}`)
 
     ws.onopen    = () => console.log('[WS] connected')
     ws.onerror   = (e) => console.error('[WS] error', e)
@@ -161,7 +161,7 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
     setProgress([])
 
     try {
-      const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+      const API_BASE = import.meta.env.VITE_API_URL
 
       // 1. Create session
       const sRes = await fetch(`${API_BASE}/session/new`, {
