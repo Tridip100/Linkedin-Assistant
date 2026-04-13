@@ -161,7 +161,9 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
     setProgress([])
 
     try {
-      const API_BASE = import.meta.env.VITE_API_URL
+      const API_BASE = import.meta.env.VITE_API_URL.replace(/\/$/, "")
+
+    
 
       // 1. Create session
       const sRes = await fetch(`${API_BASE}/session/new`, {
@@ -193,7 +195,7 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
       console.error('[search]', e)
       setError(
         e.code === 'ERR_NETWORK'
-          ? 'Cannot reach backend. Make sure uvicorn is running on port 8000.'
+          ? 'Backend unreachable — check Render backend'
           : e.response?.data?.detail || 'Something went wrong.'
       )
     } finally {
