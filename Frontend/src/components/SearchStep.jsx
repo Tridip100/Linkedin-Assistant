@@ -134,7 +134,8 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
 
   const connectWS = (sid) => {
     wsRef.current?.close()
-    const ws = new WebSocket(`ws://localhost:8000/ws/${sid}`)
+    const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
+    const ws = new WebSocket(`${WS_BASE}/ws/${sid}`)  // ← sid not session_id
 
     ws.onopen    = () => console.log('[WS] connected')
     ws.onerror   = (e) => console.error('[WS] error', e)
@@ -153,8 +154,6 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
     wsRef.current = ws
   }
 
-  useEffect(() => () => wsRef.current?.close(), [])
-
   const handleSearch = async () => {
     if (!query.trim()) { setError('Enter what you are looking for'); return }
     setError('')
@@ -162,8 +161,10 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
     setProgress([])
 
     try {
+      const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+
       // 1. Create session
-      const sRes = await fetch('http://localhost:8000/api/session/new', {
+      const sRes = await fetch(`${API_BASE}/session/new`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }
       })
       if (!sRes.ok) { setError('Backend unreachable — is uvicorn running on port 8000?'); return }
@@ -178,7 +179,7 @@ export default function SearchStep({ setSessionId, setData, goTo }) {
       // 3. Small delay for WS handshake
       await new Promise(r => setTimeout(r, 600))
 
-      // 4. Run search — this calls agents 1+2+3 and pushes WS events
+      // 4. Run search
       const res = await search(query.trim(), session_id)
       const { data, error: err } = res.data
 
